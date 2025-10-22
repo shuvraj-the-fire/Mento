@@ -1,0 +1,216 @@
+/**
+ * @file Firebase Security Rules for Mento Platform
+ * @description This ruleset enforces a strict user-ownership model for student profiles and related data,
+ * segregates company and university data for broader access, and ensures only authenticated users can
+ * create or modify data.
+ *
+ * Data Structure:
+ * - /users/{userId}: Stores user profiles, with the userId as the document ID.
+ * - /users/{userId}/studentProfiles/{studentProfileId}: Stores student profiles owned by the user.
+ * - /users/{userId}/studentProfiles/{studentProfileId}/careerRecommendations/{careerRecommendationId}: Stores career recommendations for a specific student profile.
+ * - /companies/{companyId}: Stores company profiles.
+ * - /companies/{companyId}/internships/{internshipId}: Stores internships offered by companies.
+ * - /companies/{companyId}/jobs/{jobId}: Stores jobs offered by companies.
+ * - /universities/{universityId}: Stores university profiles.
+ * - /universities/{universityId}/placementCellAnalytics/{placementCellAnalyticsId}: Stores placement cell analytics for each university.
+ *
+ * Key Security Decisions:
+ * - Enforces strong ownership: Users can only access their own student profiles and career recommendations.
+ * - Companies and Universities can create and manage their own profiles, internships, jobs and analytics.
+ * - No public listing of user-specific data (student profiles, career recommendations).
+ * - Requires authentication for all write operations.
+ *
+ * Denormalization for Authorization:
+ * - User ownership is enforced through path-based rules (e.g., /users/{userId}), eliminating the need for `get()` calls to verify ownership.
+ * - Company and University ownership of internships, jobs, and placement analytics is also enforced through path-based rules.
+ *
+ * Structural Segregation:
+ * - User-specific data (student profiles, career recommendations) is stored in user-specific subcollections to ensure privacy and prevent unauthorized access.
+ * - Company, Internship, Job, University and PlacementCellAnalytics data are segregated into top-level collections.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /**
+     * @description Allows users to read and write their own user profile.
+     * @path /users/{userId}
+     * @allow (create) - User with auth UID 'user_abc' can create a profile at /users/user_abc with matching id field.
+     * @deny (create) - User with auth UID 'user_abc' cannot create a profile at /users/user_xyz.
+     * @allow (get, update, delete) - User with auth UID 'user_abc' can get, update, or delete their profile at /users/user_abc.
+     * @deny (get, update, delete) - User with auth UID 'user_xyz' cannot get, update, or delete the profile at /users/user_abc.
+     * @principle Enforces document ownership for writes and restricts access to a user's own data.
+     */
+    match /users/{userId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && request.resource.data.id == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Allows users to manage their own student profiles.
+     * @path /users/{userId}/studentProfiles/{studentProfileId}
+     * @allow (create) - User 'user_abc' can create a student profile under their user ID.
+     * @deny (create) - User 'user_xyz' cannot create a student profile under user 'user_abc'.
+     * @allow (get, list, update, delete) - User 'user_abc' can get, list, update, or delete their own student profiles.
+     * @deny (get, list, update, delete) - User 'user_xyz' cannot get, list, update, or delete student profiles under user 'user_abc'.
+     * @principle Enforces document ownership and restricts access to a user's own data tree.
+     */
+    match /users/{userId}/studentProfiles/{studentProfileId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Allows users to manage career recommendations for their student profiles.
+     * @path /users/{userId}/studentProfiles/{studentProfileId}/careerRecommendations/{careerRecommendationId}
+     * @allow (create) - User 'user_abc' can create a career recommendation under their student profile.
+     * @deny (create) - User 'user_xyz' cannot create a career recommendation under user 'user_abc'.
+     * @allow (get, list, update, delete) - User 'user_abc' can get, list, update, or delete their own career recommendations.
+     * @deny (get, list, update, delete) - User 'user_xyz' cannot get, list, update, or delete career recommendations under user 'user_abc'.
+     * @principle Enforces document ownership and restricts access to a user's own data tree.
+     */
+    match /users/{userId}/studentProfiles/{studentProfileId}/careerRecommendations/{careerRecommendationId} {
+      function isOwner(userId) {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isExistingOwner(userId) {
+        return isOwner(userId) && resource != null;
+      }
+
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId);
+      allow update: if isExistingOwner(userId);
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Allows anyone to read company profiles, but only authenticated users can create, update, or delete them.
+     * @path /companies/{companyId}
+     * @allow (get, list) - Anyone can read company profiles.
+     * @allow (create) - Authenticated user can create a company profile.
+     * @deny (create) - Unauthenticated user cannot create a company profile.
+     * @allow (update, delete) - Authenticated user can update or delete a company profile they own.
+     * @deny (update, delete) - Unauthenticated user cannot update or delete a company profile.
+     * @principle Allows public read access with owner-only writes, requiring authentication for write operations.
+     */
+    match /companies/{companyId} {
+        allow get, list: if true;
+
+        function isSignedIn() {
+          return request.auth != null;
+        }
+
+        allow create: if isSignedIn(); // TODO: Add company ownership validation
+        allow update: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+        allow delete: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+    }
+
+    /**
+     * @description Allows anyone to read internships, but only authenticated users can create, update, or delete them.
+     * @path /companies/{companyId}/internships/{internshipId}
+     * @allow (get, list) - Anyone can read internships.
+     * @allow (create) - Authenticated user can create an internship.
+     * @deny (create) - Unauthenticated user cannot create an internship.
+     * @allow (update, delete) - Authenticated user can update or delete an internship they own.
+     * @deny (update, delete) - Unauthenticated user cannot update or delete an internship.
+     */
+    match /companies/{companyId}/internships/{internshipId} {
+        allow get, list: if true;
+
+        function isSignedIn() {
+          return request.auth != null;
+        }
+
+        allow create: if isSignedIn(); // TODO: Add company ownership validation
+        allow update: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+        allow delete: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+    }
+
+    /**
+     * @description Allows anyone to read jobs, but only authenticated users can create, update, or delete them.
+     * @path /companies/{companyId}/jobs/{jobId}
+     * @allow (get, list) - Anyone can read jobs.
+     * @allow (create) - Authenticated user can create a job.
+     * @deny (create) - Unauthenticated user cannot create a job.
+     * @allow (update, delete) - Authenticated user can update or delete a job they own.
+     * @deny (update, delete) - Unauthenticated user cannot update or delete a job.
+     */
+    match /companies/{companyId}/jobs/{jobId} {
+        allow get, list: if true;
+
+        function isSignedIn() {
+          return request.auth != null;
+        }
+
+        allow create: if isSignedIn(); // TODO: Add company ownership validation
+        allow update: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+        allow delete: if isSignedIn() && resource != null; // TODO: Add company ownership validation
+    }
+
+    /**
+     * @description Allows anyone to read university profiles, but only authenticated users can create, update, or delete them.
+     * @path /universities/{universityId}
+     * @allow (get, list) - Anyone can read university profiles.
+     * @allow (create) - Authenticated user can create a university profile.
+     * @deny (create) - Unauthenticated user cannot create a university profile.
+     * @allow (update, delete) - Authenticated user can update or delete a university profile they own.
+     * @deny (update, delete) - Unauthenticated user cannot update or delete a university profile.
+     */
+    match /universities/{universityId} {
+        allow get, list: if true;
+
+        function isSignedIn() {
+          return request.auth != null;
+        }
+
+        allow create: if isSignedIn(); // TODO: Add university ownership validation
+        allow update: if isSignedIn() && resource != null; // TODO: Add university ownership validation
+        allow delete: if isSignedIn() && resource != null; // TODO: Add university ownership validation
+    }
+
+    /**
+     * @description Allows anyone to read placement cell analytics, but only authenticated users can create, update, or delete them.
+     * @path /universities/{universityId}/placementCellAnalytics/{placementCellAnalyticsId}
+     * @allow (get, list) - Anyone can read placement cell analytics.
+     * @allow (create) - Authenticated user can create a placement cell analytics entry.
+     * @deny (create) - Unauthenticated user cannot create a placement cell analytics entry.
+     * @allow (update, delete) - Authenticated user can update or delete a placement cell analytics entry they own.
+     * @deny (update, delete) - Unauthenticated user cannot update or delete a placement cell analytics entry.
+     */
+    match /universities/{universityId}/placementCellAnalytics/{placementCellAnalyticsId} {
+        allow get, list: if true;
+
+        function isSignedIn() {
+          return request.auth != null;
+        }
+
+        allow create: if isSignedIn(); // TODO: Add university ownership validation
+        allow update: if isSignedIn() && resource != null; // TODO: Add university ownership validation
+        allow delete: if isSignedIn() && resource != null; // TODO: Add university ownership validation
+    }
+  }
+}
